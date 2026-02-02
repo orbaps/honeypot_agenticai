@@ -29,18 +29,24 @@ export async function generatePDFReport(
     doc.moveDown();
 
     // === Executive Summary / Intel ===
-    doc.fontSize(18).text('Extracted Intelligence');
+    doc.fontSize(18).text('Extracted Intelligence Summary');
     doc.moveDown(0.5);
     
     if (reports.length === 0) {
         doc.fontSize(12).text('No specific intelligence (UPI, Bank, URL) detected yet.');
     } else {
-        reports.forEach(report => {
-            doc.fontSize(12).font('Helvetica-Bold').text(`${report.intelType.toUpperCase()}:`, { continued: true });
-            doc.font('Helvetica').text(` ${report.intelValue}`);
-            doc.fontSize(10).fillColor('gray').text(`Context: ${report.context}`);
-            doc.fillColor('black');
-            doc.moveDown(0.5);
+        const categories = ['upi', 'bank_account', 'url', 'phone', 'crypto'];
+        categories.forEach(cat => {
+            const catReports = reports.filter(r => r.intelType === cat);
+            if (catReports.length > 0) {
+                doc.fontSize(14).font('Helvetica-Bold').text(cat.toUpperCase().replace('_', ' '));
+                catReports.forEach(report => {
+                    doc.fontSize(12).font('Helvetica').text(`- Value: ${report.intelValue}`);
+                    doc.fontSize(10).fillColor('gray').text(`  Context: ${report.context}`);
+                    doc.fillColor('black');
+                });
+                doc.moveDown(0.5);
+            }
         });
     }
     doc.moveDown();

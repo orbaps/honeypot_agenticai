@@ -1,38 +1,84 @@
-import { type User, type InsertUser } from "@shared/schema";
-import { randomUUID } from "crypto";
 
-// modify the interface with any CRUD methods
-// you might need
+import { db } from "./db";
+import {
+  conversations,
+  messages,
+  scamReports,
+  type Conversation,
+  type Message,
+  type ScamReport,
+  type InsertConversation,
+  type InsertMessage,
+} from "@shared/schema";
+import { eq, desc, asc } from "drizzle-orm";
 
 export interface IStorage {
-  getUser(id: string): Promise<User | undefined>;
-  getUserByUsername(username: string): Promise<User | undefined>;
-  createUser(user: InsertUser): Promise<User>;
+  // Conversations
+  getConversations(): Promise<Conversation[]>;
+  getConversation(id: number): Promise<Conversation | undefined>;
+  createConversation(conversation: InsertConversation): Promise<Conversation>;
+  updateConversation(id: number, updates: Partial<Conversation>): Promise<Conversation>;
+  
+  // Messages
+  getMessages(conversationId: number): Promise<Message[]>;
+  createMessage(message: InsertMessage): Promise<Message>;
+  
+  // Reports/Intel
+  getScamReports(conversationId: number): Promise<ScamReport[]>;
+  createScamReport(report: any): Promise<ScamReport>;
+  clearConversationMessages(conversationId: number): Promise<void>;
 }
 
-export class MemStorage implements IStorage {
-  private users: Map<string, User>;
-
-  constructor() {
-    this.users = new Map();
+export class DatabaseStorage implements IStorage {
+  async getConversations(): Promise<Conversation[]> {
+    return await db.select().from(conversations).orderBy(desc(conversations.createdAt));
   }
 
-  async getUser(id: string): Promise<User | undefined> {
-    return this.users.get(id);
+  async getConversation(id: number): Promise<Conversation | undefined> {
+    const [conversation] = await db.select().from(conversations).where(eq(conversations.id, id));
+    return conversation;
   }
 
-  async getUserByUsername(username: string): Promise<User | undefined> {
-    return Array.from(this.users.values()).find(
-      (user) => user.username === username,
-    );
+  async createConversation(conversation: InsertConversation): Promise<Conversation> {
+    const [newConversation] = await db.insert(conversations).values(conversation).returning();
+    return newConversation;
   }
 
-  async createUser(insertUser: InsertUser): Promise<User> {
-    const id = randomUUID();
-    const user: User = { ...insertUser, id };
-    this.users.set(id, user);
-    return user;
+  async updateConversation(id: number, updates: Partial<Conversation>): Promise<Conversation> {
+    const [updated] = await db.update(conversations)
+      .set(updates)
+      .where(eq(conversations.id, id))
+      .returning();
+    return updated;
+  }
+
+  async getMessages(conversationId: number): Promise<Message[]> {
+    return await db.select()
+      .from(messages)
+      .where(eq(messages.conversationId, conversationId))
+      .orderBy(asc(messages.createdAt)); // Oldest first for chat history
+  }
+
+  async createMessage(message: InsertMessage): Promise<Message> {
+    const [newMessage] = await db.insert(messages).values(message).returning();
+    return newMessage;
+  }
+
+  async getScamReports(conversationId: number): Promise<ScamReport[]> {
+    return await db.select()
+      .from(scamReports)
+      .where(eq(scamReports.conversationId, conversationId));
+  }
+
+  async createScamReport(report: any): Promise<ScamReport> {
+    const [newReport] = await db.insert(scamReports).values(report).returning();
+    return newReport;
+  }
+
+  async clearConversationMessages(conversationId: number): Promise<void> {
+    await db.delete(messages).where(eq(messages.conversationId, conversationId));
+    await db.delete(scamReports).where(eq(scamReports.conversationId, conversationId));
   }
 }
 
-export const storage = new MemStorage();
+export const storage = new DatabaseStorage();

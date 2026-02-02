@@ -73,6 +73,7 @@ export const api = {
       input: z.object({
         content: z.string(),
         sender: z.enum(['scammer', 'agent']),
+        apiKey: z.string().optional(),
       }),
       responses: {
         201: z.custom<typeof messages.$inferSelect>(),

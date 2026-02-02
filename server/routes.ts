@@ -52,7 +52,7 @@ export async function registerRoutes(
 
   app.post(api.messages.create.path, async (req, res) => {
     const conversationId = Number(req.params.id);
-    const { content, sender } = req.body;
+    const { content, sender, apiKey } = req.body;
 
     // 1. Save the incoming message
     const newMessage = await storage.createMessage({
@@ -75,19 +75,23 @@ export async function registerRoutes(
       }
     }
 
-    // 3. If agent is active and sender is scammer, trigger agent response
+    // 3. Handoff logic: If agent is NOT active but a valid API key is provided for handoff
+    // For this demo, we'll assume "DEMO_KEY" is valid.
     const conversation = await storage.getConversation(conversationId);
-    if (conversation?.isAgentActive && sender === 'scammer') {
-       // We process this asynchronously so the API returns quickly, 
-       // OR we can await it if we want the "typing" delay to be handled by frontend polling.
-       // For a demo, let's await it or fire-and-forget. 
-       // To ensure the frontend sees it soon, we'll await it but with a small delay simulation inside generateAgentResponse if needed.
-       
-       // Get recent history for context
+    
+    // Auto-activate if handoff is initiated with API key
+    if (apiKey === "DEMO_KEY" && !conversation?.isAgentActive) {
+        await storage.updateConversation(conversationId, { isAgentActive: true });
+    }
+
+    const updatedConversation = await storage.getConversation(conversationId);
+
+    // 4. If agent is active and sender is scammer, trigger agent response
+    if (updatedConversation?.isAgentActive && sender === 'scammer') {
        const history = await storage.getMessages(conversationId);
        
        try {
-           const agentResponse = await generateAgentResponse(history, conversation);
+           const agentResponse = await generateAgentResponse(history, updatedConversation);
            
            if (agentResponse) {
                await storage.createMessage({

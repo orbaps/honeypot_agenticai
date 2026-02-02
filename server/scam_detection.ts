@@ -10,16 +10,37 @@ export type IntelItem = {
 export function analyzeMessageForIntel(content: string): IntelItem[] {
   const intel: IntelItem[] = [];
   
-  // UPI ID Regex (generic)
-  const upiRegex = /[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}/g;
+  // UPI ID Regex (Improved: Handles standard VPA formats)
+  const upiRegex = /\b[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}\b/g;
   const upiMatches = content.match(upiRegex);
   if (upiMatches) {
     upiMatches.forEach(match => {
-      intel.push({ type: 'upi', value: match, context: 'Detected UPI ID in message' });
+      intel.push({ type: 'upi', value: match, context: 'Detected UPI VPA' });
     });
   }
 
-  // URL Regex
+  // Bank Details (Improved: Looking for IFSC codes and Account numbers in context)
+  const ifscRegex = /\b[A-Z]{4}0[A-Z0-9]{6}\b/g;
+  const ifscMatches = content.match(ifscRegex);
+  if (ifscMatches) {
+    ifscMatches.forEach(match => {
+      intel.push({ type: 'bank_account', value: match, context: 'Detected Bank IFSC Code' });
+    });
+  }
+
+  const accRegex = /\b\d{9,18}\b/g;
+  const accMatches = content.match(accRegex);
+  if (accMatches) {
+    accMatches.forEach(match => {
+      // Look for keywords nearby in content to reduce false positives
+      const lowerContent = content.toLowerCase();
+      if (lowerContent.includes('account') || lowerContent.includes('acc') || lowerContent.includes('bank') || lowerContent.includes('transfer')) {
+        intel.push({ type: 'bank_account', value: match, context: 'Detected potential bank account number' });
+      }
+    });
+  }
+
+  // URL Regex (Improved: Excludes common safe domains if needed, but here we want all)
   const urlRegex = /(https?:\/\/[^\s]+)/g;
   const urlMatches = content.match(urlRegex);
   if (urlMatches) {
@@ -28,23 +49,12 @@ export function analyzeMessageForIntel(content: string): IntelItem[] {
     });
   }
 
-  // Phone Number (Generic 10 digit)
-  const phoneRegex = /\b\d{10}\b/g;
+  // Phone Number (Improved: Common international and local formats)
+  const phoneRegex = /(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g;
   const phoneMatches = content.match(phoneRegex);
   if (phoneMatches) {
     phoneMatches.forEach(match => {
-        // Basic filter to avoid simple numbers like timestamps if needed
-      intel.push({ type: 'phone', value: match, context: 'Detected potential phone number' });
-    });
-  }
-
-  // Crypto Wallet (Basic check for long alphanumeric strings often found in scam scripts)
-  // This is very loose, just for demo purposes
-  const cryptoRegex = /\b(bc1|[13])[a-zA-HJ-NP-Z0-9]{25,39}\b/g; // Bitcoin
-  const cryptoMatches = content.match(cryptoRegex);
-  if (cryptoMatches) {
-    cryptoMatches.forEach(match => {
-        intel.push({ type: 'crypto', value: match, context: 'Detected potential Bitcoin wallet' });
+      intel.push({ type: 'phone', value: match.replace(/[^\d+]/g, ''), context: 'Detected contact phone number' });
     });
   }
 

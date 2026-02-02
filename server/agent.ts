@@ -301,6 +301,34 @@ function isTooSimilar(newMessage: string, lastAgentMessage: string | null): bool
 }
 
 // ============================================================================
+// REALISTIC DELAY (makes responses feel human, not instant)
+// ============================================================================
+async function humanDelay(): Promise<void> {
+  const delayMs = 2000 + Math.random() * 2000; // 2-4 seconds
+  return new Promise(resolve => setTimeout(resolve, delayMs));
+}
+
+// ============================================================================
+// VARIED FALLBACK MESSAGES
+// ============================================================================
+const FALLBACK_MESSAGES = [
+  "Beta, my phone is acting up... the screen froze. Can you wait one minute?",
+  "Arrey, this phone is so slow today. Give me a moment beta.",
+  "Oh no, the app just crashed. Let me open it again...",
+  "Beta, I'm having trouble with my phone. It's loading so slowly.",
+  "Wait beta, I need to restart this app. It's not responding.",
+];
+
+function getVariedFallback(lastMessage: string | null): string {
+  // Try to return a different message than last time
+  const available = lastMessage
+    ? FALLBACK_MESSAGES.filter(msg => !isTooSimilar(msg, lastMessage))
+    : FALLBACK_MESSAGES;
+
+  return available[Math.floor(Math.random() * available.length)] || FALLBACK_MESSAGES[0];
+}
+
+// ============================================================================
 // MAIN AGENT FUNCTION
 // ============================================================================
 export async function generateAgentResponse(
@@ -308,7 +336,16 @@ export async function generateAgentResponse(
   conversation: Conversation,
   isInitiating: boolean = false
 ) {
+  // Get last agent message for repetition check
+  const lastAgentMessage = history
+    .slice()
+    .reverse()
+    .find(msg => msg.sender === 'agent')?.content || null;
+
   try {
+    // Add realistic human delay BEFORE responding
+    await humanDelay();
+
     const genAI = getGeminiClient();
     const model = genAI.getGenerativeModel({
       model: "gemini-1.5-flash",
@@ -334,12 +371,6 @@ export async function generateAgentResponse(
       }
     });
 
-    // Get last agent message for repetition check
-    const lastAgentMessage = history
-      .slice()
-      .reverse()
-      .find(msg => msg.sender === 'agent')?.content || null;
-
     // Determine current goal from last agent message or calculate new one
     const lastGoalStr = history
       .slice()
@@ -364,6 +395,9 @@ export async function generateAgentResponse(
       ? "I just answered your call. Hello?"
       : history[history.length - 1]?.content || "Hello";
 
+    console.log(`🤖 Agent generating response for goal: ${currentGoal}`);
+    console.log(`📊 Intelligence gaps:`, intelligence);
+
     // Start chat
     const chat = model.startChat({
       history: isInitiating ? [] : conversationHistory.slice(0, -1),
@@ -373,18 +407,38 @@ export async function generateAgentResponse(
     // Generate response
     const result = await chat.sendMessage(messageToSend);
     const responseText = result.response.text();
+
+    console.log(`✅ LLM raw response: ${responseText.substring(0, 100)}...`);
+
     const parsed = JSON.parse(responseText);
 
     // Anti-repetition check
-    let finalContent = parsed.reply_content || "Beta, one moment please...";
+    let finalContent = parsed.reply_content || getVariedFallback(lastAgentMessage);
+
     if (isTooSimilar(finalContent, lastAgentMessage)) {
+      console.log(`⚠️ Detected repetition, regenerating...`);
+
       // Force regeneration with variation instruction
-      const retryResult = await chat.sendMessage(
-        "That response was too similar to your last message. Say the same thing but in a DIFFERENT way with different words."
-      );
-      const retryParsed = JSON.parse(retryResult.response.text());
-      finalContent = retryParsed.reply_content || finalContent;
+      try {
+        const retryResult = await chat.sendMessage(
+          "STOP! That response was too similar to your last message. Generate a COMPLETELY DIFFERENT response with different words and phrasing. Keep the same goal but vary the wording significantly."
+        );
+        const retryParsed = JSON.parse(retryResult.response.text());
+        finalContent = retryParsed.reply_content || getVariedFallback(lastAgentMessage);
+        console.log(`✅ Regenerated response: ${finalContent.substring(0, 50)}...`);
+      } catch (retryError) {
+        console.error("Retry failed:", retryError);
+        finalContent = getVariedFallback(lastAgentMessage);
+      }
     }
+
+    // Final safety check
+    if (isTooSimilar(finalContent, lastAgentMessage)) {
+      console.log(`⚠️ Still too similar after retry, using varied fallback`);
+      finalContent = getVariedFallback(lastAgentMessage);
+    }
+
+    console.log(`📤 Final response: ${finalContent.substring(0, 50)}...`);
 
     // Return structured response
     return {
@@ -399,10 +453,16 @@ export async function generateAgentResponse(
     };
 
   } catch (error) {
-    console.error("Agent processing error:", error instanceof Error ? error.message : "Unknown error");
+    console.error("❌ AGENT ERROR (FULL):", error);
+    console.error("Error type:", error instanceof Error ? error.constructor.name : typeof error);
+    if (error instanceof Error) {
+      console.error("Error message:", error.message);
+      console.error("Error stack:", error.stack);
+    }
 
+    // Return varied fallback to prevent repetition even on errors
     return {
-      content: "Beta, my phone is acting up... the screen froze. Can you wait one minute?",
+      content: getVariedFallback(lastAgentMessage),
       metadata: {
         current_goal: "ENGAGE_AND_STALL",
         emotional_state: "Confused",

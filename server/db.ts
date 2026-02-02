@@ -5,11 +5,15 @@ import * as schema from "@shared/schema";
 
 const { Pool } = pg;
 
-if (!process.env.DATABASE_URL) {
-  throw new Error(
-    "DATABASE_URL must be set. Did you forget to provision a database?",
-  );
-}
+// Make database optional - if DATABASE_URL is not set, exports will be null
+// This allows the app to run with in-memory storage only
+export let pool: pg.Pool | null = null;
+export let db: ReturnType<typeof drizzle> | null = null;
 
-export const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-export const db = drizzle(pool, { schema });
+if (process.env.DATABASE_URL) {
+  console.log("📦 Database URL detected - initializing PostgreSQL connection");
+  pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  db = drizzle(pool, { schema });
+} else {
+  console.log("⚠️  No DATABASE_URL - running with in-memory storage only");
+}

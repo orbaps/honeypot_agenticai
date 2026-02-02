@@ -7,6 +7,8 @@ import { z } from "zod";
 import { generateAgentResponse } from "./agent";
 import { analyzeMessageForIntel } from "./scam_detection";
 import { generatePDFReport } from "./report";
+import { getOrCreateSession } from "./sessions";
+
 
 export async function registerRoutes(
   httpServer: Server,
@@ -72,6 +74,13 @@ export async function registerRoutes(
 
     // Use conversation_id from body (phase 2.1 requirement) or fallback to URL param
     const conversationId = Number(conversation_id) || Number(req.params.id);
+
+    // ========================================================================
+    // PHASE 2.2: ATTACH SESSION STORE
+    // ========================================================================
+    const session = getOrCreateSession(conversation_id);
+    console.log("📦 Active session:", session.conversation_id, "| has_initiated:", session.agent_state.has_initiated);
+
 
     // 1. Save the incoming message
     const newMessage = await storage.createMessage({

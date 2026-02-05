@@ -1,5 +1,7 @@
-import dotenv from "dotenv";
-dotenv.config();
+// Only load dotenv in development (production env vars are set by Render)
+if (process.env.NODE_ENV !== "production") {
+  require("dotenv").config();
+}
 
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";

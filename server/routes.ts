@@ -1,5 +1,5 @@
 
-import type { Express } from "express";
+import type { Express, Request, Response, NextFunction } from "express";
 import type { Server } from "http";
 import { storage } from "./storage";
 import { api } from "@shared/routes";
@@ -8,6 +8,35 @@ import { generateAgentResponse } from "./agent";
 import { analyzeMessageForIntel } from "./scam_detection";
 import { generatePDFReport } from "./report";
 import { getOrCreateSession } from "./sessions";
+
+// Simple in-memory rate limiter
+const rateLimitMap = new Map<string, { count: number; resetTime: number }>();
+
+function rateLimiter(req: Request, res: Response, next: NextFunction) {
+  const ip = req.ip || "unknown";
+  const now = Date.now();
+  const windowMs = 60 * 1000; // 1 minute window
+  const limit = 20; // 20 requests per minute
+
+  const record = rateLimitMap.get(ip);
+
+  if (record) {
+    if (now > record.resetTime) {
+      // Reset window
+      rateLimitMap.set(ip, { count: 1, resetTime: now + windowMs });
+    } else {
+      // Increment count
+      record.count += 1;
+      if (record.count > limit) {
+        return res.status(429).json({ error: "Too many requests, please try again later." });
+      }
+    }
+  } else {
+    // New IP
+    rateLimitMap.set(ip, { count: 1, resetTime: now + windowMs });
+  }
+  next();
+}
 
 // PHASE 4.2: Risk score computation (judge-friendly, explainable)
 function computeRiskScore(session: any): number {
@@ -98,16 +127,20 @@ export async function registerRoutes(
     res.json(msgs);
   });
 
-  app.post(api.messages.create.path, async (req, res) => {
+  app.post(api.messages.create.path, rateLimiter, async (req, res) => {
     // ========================================================================
     // PHASE 2.1: ENFORCE conversation_id VALIDATION
     // ========================================================================
-    const { conversation_id, content, sender, apiKey } = req.body;
+    const { sender, apiKey } = req.body;
+    let { conversation_id, content } = req.body;
+
+    // Use conversation_id from URL param (preferred) or body (fallback)
+    const conversationId = Number(req.params.id) || Number(conversation_id);
 
     // Validate conversation_id
-    if (!conversation_id) {
+    if (!conversationId || isNaN(conversationId)) {
       return res.status(400).json({
-        error: "conversation_id is required"
+        error: "conversation_id is required and must be a number"
       });
     }
 
@@ -118,13 +151,18 @@ export async function registerRoutes(
       });
     }
 
-    // Use conversation_id from body (phase 2.1 requirement) or fallback to URL param
-    const conversationId = Number(conversation_id) || Number(req.params.id);
+    // SANITIZATION: Trim and Limit Length
+    content = content.trim();
+    if (content.length > 2000) {
+      return res.status(400).json({
+        error: "Message is too long (max 2000 characters)"
+      });
+    }
 
     // ========================================================================
     // PHASE 2.2: ATTACH SESSION STORE
     // ========================================================================
-    const session = getOrCreateSession(conversation_id);
+    const session = getOrCreateSession(String(conversationId));
     console.log("📦 Active session:", session.conversation_id, "| has_initiated:", session.agent_state.has_initiated);
 
 
@@ -203,59 +241,64 @@ export async function registerRoutes(
 
 
     if (shouldAgentRespond) {
-      const history = await storage.getMessages(conversationId);
+      const historyPromise = storage.getMessages(conversationId);
 
-      console.log(`🤖 Calling LLM agent (session-aware, initiated: ${session.agent_state.has_initiated})...`);
+      console.log(`🤖 Queuing LLM agent (session-aware, initiated: ${session.agent_state.has_initiated})...`);
 
-      try {
-        // PHASE 2.3: Pass session to agent
-        const agentResponse = await generateAgentResponse(
-          history,
-          updatedConversation,
-          session  // Session replaces isInitiating flag
-        );
+      // NON-BLOCKING: Process agent response in background
+      // This prevents the API from timing out while the LLM thinks/delays
+      (async () => {
+        try {
+          const history = await historyPromise;
+          // PHASE 2.3: Pass session to agent
+          const agentResponse = await generateAgentResponse(
+            history,
+            updatedConversation!,
+            session  // Session replaces isInitiating flag
+          );
 
-        if (agentResponse) {
-          // Save agent message
+          if (agentResponse) {
+            // Save agent message
+            await storage.createMessage({
+              conversationId,
+              sender: 'agent',
+              content: agentResponse.content,
+              metadata: agentResponse.metadata
+            });
+
+            // PHASE 2.4, 2.5, 2.7: Update session state
+            if (agentResponse.session_updates) {
+              session.agent_state.has_initiated = agentResponse.session_updates.has_initiated;
+              session.agent_state.current_goal = agentResponse.session_updates.current_goal;
+              session.agent_state.last_reply = agentResponse.session_updates.last_reply;
+
+              // PHASE 2.8: Mark session inactive if exit
+              if (agentResponse.session_updates.should_exit) {
+                session.is_active = false;
+                await storage.updateConversation(conversationId, { isAgentActive: false });
+                console.log(`🛑 Session ${session.conversation_id} marked inactive (EXIT_SAFELY)`);
+              }
+
+              console.log(`✅ Session updated: goal=${session.agent_state.current_goal}, has_initiated=${session.agent_state.has_initiated}`);
+            }
+
+            console.log(`✅ Agent responded: "${agentResponse.content.substring(0, 50)}..."`);
+          }
+        } catch (error) {
+          console.error("❌ AGENT FAILED (Background):", error);
+          console.error("Error type:", error instanceof Error ? error.constructor.name : typeof error);
+          console.error("Error message:", error instanceof Error ? error.message : String(error));
+          console.error("Stack trace:", error instanceof Error ? error.stack : 'No stack');
+
+          // Create error message so user can see the failure
           await storage.createMessage({
             conversationId,
             sender: 'agent',
-            content: agentResponse.content,
-            metadata: agentResponse.metadata
+            content: `[AGENT ERROR: ${error instanceof Error ? error.message : 'LLM call failed - check GEMINI_API_KEY'}]`,
+            metadata: { error: true, errorMessage: String(error) }
           });
-
-          // PHASE 2.4, 2.5, 2.7: Update session state
-          if (agentResponse.session_updates) {
-            session.agent_state.has_initiated = agentResponse.session_updates.has_initiated;
-            session.agent_state.current_goal = agentResponse.session_updates.current_goal;
-            session.agent_state.last_reply = agentResponse.session_updates.last_reply;
-
-            // PHASE 2.8: Mark session inactive if exit
-            if (agentResponse.session_updates.should_exit) {
-              session.is_active = false;
-              await storage.updateConversation(conversationId, { isAgentActive: false });
-              console.log(`🛑 Session ${session.conversation_id} marked inactive (EXIT_SAFELY)`);
-            }
-
-            console.log(`✅ Session updated: goal=${session.agent_state.current_goal}, has_initiated=${session.agent_state.has_initiated}`);
-          }
-
-          console.log(`✅ Agent responded: "${agentResponse.content.substring(0, 50)}..."`);
         }
-      } catch (error) {
-        console.error("❌ AGENT FAILED:", error);
-        console.error("Error type:", error instanceof Error ? error.constructor.name : typeof error);
-        console.error("Error message:", error instanceof Error ? error.message : String(error));
-        console.error("Stack trace:", error instanceof Error ? error.stack : 'No stack');
-
-        // Create error message so user can see the failure
-        await storage.createMessage({
-          conversationId,
-          sender: 'agent',
-          content: `[AGENT ERROR: ${error instanceof Error ? error.message : 'LLM call failed - check GEMINI_API_KEY'}]`,
-          metadata: { error: true, errorMessage: String(error) }
-        });
-      }
+      })();
     }
 
     // PHASE 3.4 & 3.5: Return structured response with extracted intel and confidence

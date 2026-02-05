@@ -207,12 +207,15 @@ Example: "Beta, thank you. I will go to bank branch tomorrow. My grandson will h
   }
 
   // Phase 2.3: Session-aware context
+  // SANITIZATION: Truncate intel values to prevent large prompt injections
+  const truncate = (str: string, maxLen: number = 50) => str.length > maxLen ? str.substring(0, maxLen) + "..." : str;
+
   let intelContext = "";
   const allIntel = [
-    ...session.extracted_intel.upi_ids.map(id => `UPI: ${id}`),
-    ...session.extracted_intel.bank_accounts.map(acc => `Bank: ${acc}`),
-    ...session.extracted_intel.phishing_links.map(link => `Link: ${link}`),
-    ...session.extracted_intel.phone_numbers.map(phone => `Phone: ${phone}`)
+    ...session.extracted_intel.upi_ids.map(id => `UPI: ${truncate(id)}`),
+    ...session.extracted_intel.bank_accounts.map(acc => `Bank: ${truncate(acc)}`),
+    ...session.extracted_intel.phishing_links.map(link => `Link: ${truncate(link, 100)}`), // Allow longer links
+    ...session.extracted_intel.phone_numbers.map(phone => `Phone: ${truncate(phone)}`)
   ];
 
   if (allIntel.length > 0) {
